@@ -28,7 +28,7 @@ func NewMock() *mock {
 	return &mock{gauge: g, registry: r}
 }
 
-func (m *mock) Retrieve(context.Context, *http.Request) ([]*clientmodel.MetricFamily, error) {
+func (m *mock) Retrieve(_ context.Context, req *http.Request) ([]*clientmodel.MetricFamily, error) {
 	m.gauge.Set(rand.Float64())
 	families, err := m.registry.Gather()
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,11 +25,12 @@ import (
 
 func main() {
 	opt := &Options{
-		Listen:     "localhost:9002",
-		LimitBytes: 200 * 1024,
-		Rules:      []string{`{__name__="up"}`},
-		Interval:   4*time.Minute + 30*time.Second,
-		N:          1000,
+		Listen:       "localhost:9002",
+		LimitBytes:   200 * 1024,
+		Rules:        []string{`{__name__="up"}`},
+		Interval:     4*time.Minute + 30*time.Second,
+		N:            1,
+		InitialDelay: time.Duration(-1),
 	}
 	cmd := &cobra.Command{
 		Short: "Federate Prometheus via push",
@@ -39,6 +41,7 @@ func main() {
 		},
 	}
 
+	cmd.Flags().DurationVar(&opt.InitialDelay, "delay", opt.InitialDelay, "The initial delay before sending metrics.")
 	cmd.Flags().IntVar(&opt.N, "number", opt.N, "Number of workers to spawn.")
 	cmd.Flags().StringVar(&opt.Listen, "listen", opt.Listen, "A host:port to listen on for health and metrics.")
 	cmd.Flags().StringVar(&opt.To, "to", opt.To, "A telemeter server to send metrics to.")
@@ -87,22 +90,33 @@ type Options struct {
 	LabelFlag []string
 	Labels    map[string]string
 
-	Interval time.Duration
+	Interval     time.Duration
+	InitialDelay time.Duration
 
-	LabelRetriever metricfamily.LabelRetriever
-	N              int
+	N int
 }
 
-func (o *Options) Transforms() []metricfamily.Transformer {
+type transforms struct {
+	labelRetriever  metricfamily.LabelRetriever
+	labels          map[string]string
+	anonymizeLabels []string
+	anonymizeSalt   string
+	renames         map[string]string
+	rules           []string
+
+	forwarder forwarder.Worker
+}
+
+func (t *transforms) Transforms() []metricfamily.Transformer {
 	var transforms metricfamily.AllTransformer
-	if len(o.Labels) > 0 || o.LabelRetriever != nil {
-		transforms = append(transforms, metricfamily.NewLabel(o.Labels, o.LabelRetriever))
+	if len(t.labels) > 0 || t.labelRetriever != nil {
+		transforms = append(transforms, metricfamily.NewLabel(t.labels, t.labelRetriever))
 	}
-	if len(o.AnonymizeLabels) > 0 {
-		transforms = append(transforms, metricfamily.NewMetricsAnonymizer(o.AnonymizeSalt, o.AnonymizeLabels, nil))
+	if len(t.anonymizeLabels) > 0 {
+		transforms = append(transforms, metricfamily.NewMetricsAnonymizer(t.anonymizeSalt, t.anonymizeLabels, nil))
 	}
-	if len(o.Renames) > 0 {
-		transforms = append(transforms, metricfamily.RenameMetrics{Names: o.Renames})
+	if len(t.renames) > 0 {
+		transforms = append(transforms, metricfamily.RenameMetrics{Names: t.renames})
 	}
 	transforms = append(transforms,
 		metricfamily.NewDropInvalidFederateSamples(time.Now().Add(-24*time.Hour)),
@@ -112,8 +126,8 @@ func (o *Options) Transforms() []metricfamily.Transformer {
 	return []metricfamily.Transformer{transforms}
 }
 
-func (o *Options) MatchRules() []string {
-	return o.Rules
+func (t *transforms) MatchRules() []string {
+	return t.rules
 }
 
 func (o *Options) Run() error {
@@ -182,21 +196,35 @@ func (o *Options) Run() error {
 
 	var ws []forwarder.Worker
 	for i := 0; i < o.N; i++ {
-		c, u, err := o.clientAndURL(i)
+		c, u, lt, err := o.clientAndURL(i)
+
+		ts := transforms{
+			labelRetriever:  lt,
+			labels:          o.Labels,
+			anonymizeLabels: o.AnonymizeLabels,
+			anonymizeSalt:   o.AnonymizeSalt,
+			renames:         o.Renames,
+			rules:           o.Rules,
+		}
+
 		if err != nil {
 			return fmt.Errorf("failed to generate HTTP client and URL for worker %d: %v", i, err)
 		}
-		worker := forwarder.New(url.URL{}, u, o)
+		worker := forwarder.New(url.URL{}, u, &ts)
 		worker.ToClient = metricsclient.New(c, o.LimitBytes, o.Interval, "federate_to")
 		worker.FromClient = metricsclient.NewMock()
 		worker.Interval = o.Interval
 		ws = append(ws, *worker)
-		log.Printf("Starting telemeter-client %i reading from mock and sending to %s (listen=%s)", i, o.To, o.Listen)
 
-		go func() {
-			//time.Sleep(time.Duration(rand.Intn(int(worker.Interval))))
+		go func(i int) {
+			initialDelay := o.InitialDelay
+			if initialDelay < 0 {
+				initialDelay = time.Duration(rand.Intn(int(worker.Interval)))
+			}
+			log.Printf("Starting telemeter-client %d, sending metrics in %v", i, initialDelay)
+			time.Sleep(initialDelay)
 			worker.Run()
-		}()
+		}(i)
 	}
 
 	if len(o.Listen) > 0 {
@@ -215,25 +243,25 @@ func (o *Options) Run() error {
 	select {}
 }
 
-func (o *Options) clientAndURL(id int) (*http.Client, *url.URL, error) {
+func (o *Options) clientAndURL(id int) (*http.Client, *url.URL, metricfamily.LabelRetriever, error) {
 	var to, toUpload, toAuthorize *url.URL
 	var err error
 	if len(o.ToUpload) > 0 {
 		to, err = url.Parse(o.ToUpload)
 		if err != nil {
-			return nil, nil, fmt.Errorf("--to is not a valid URL: %v", err)
+			return nil, nil, nil, fmt.Errorf("--to is not a valid URL: %v", err)
 		}
 	}
 	if len(o.ToAuthorize) > 0 {
 		toAuthorize, err = url.Parse(o.ToAuthorize)
 		if err != nil {
-			return nil, nil, fmt.Errorf("--to-auth is not a valid URL: %v", err)
+			return nil, nil, nil, fmt.Errorf("--to-auth is not a valid URL: %v", err)
 		}
 	}
 	if len(o.To) > 0 {
 		to, err = url.Parse(o.To)
 		if err != nil {
-			return nil, nil, fmt.Errorf("--to is not a valid URL: %v", err)
+			return nil, nil, nil, fmt.Errorf("--to is not a valid URL: %v", err)
 		}
 		if len(to.Path) == 0 {
 			to.Path = "/"
@@ -254,18 +282,20 @@ func (o *Options) clientAndURL(id int) (*http.Client, *url.URL, error) {
 	}
 
 	if toUpload == nil || toAuthorize == nil {
-		return nil, nil, fmt.Errorf("either --to or --to-auth and --to-upload must be specified")
+		return nil, nil, nil, fmt.Errorf("either --to or --to-auth and --to-upload must be specified")
 	}
 
+	var lt metricfamily.LabelRetriever
 	toClient := &http.Client{Transport: metricsclient.DefaultTransport()}
 	if len(o.ToToken) > 0 {
 		// exchange our token for a token from the authorize endpoint, which also gives us a
 		// set of expected labels we must include
 		rt := remote.NewServerRotatingRoundTripper(o.ToToken, toAuthorize, toClient.Transport)
-		o.LabelRetriever = rt
+		lt = rt
 		toClient.Transport = rt
 	}
-	return toClient, toUpload, nil
+
+	return toClient, toUpload, lt, nil
 }
 
 // serveLastMetrics retrieves the last set of metrics served

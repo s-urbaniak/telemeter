@@ -1,6 +1,8 @@
 package metricfamily
 
-import clientmodel "github.com/prometheus/client_model/go"
+import (
+	clientmodel "github.com/prometheus/client_model/go"
+)
 
 type AllTransformer []Transformer
 
