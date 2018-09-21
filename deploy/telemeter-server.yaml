@@ -10,7 +10,7 @@ items:
   metadata:
     name: telemeter
   spec:
-    clusterIP: None
+    type: NodePort
     selector:
       app: telemeter
     ports:
@@ -42,6 +42,7 @@ items:
   metadata:
     name: telemeter
   spec:
+    replicas: 3
     podManagementPolicy: Parallel
     serviceName: telemeter-cluster
     selector:
@@ -70,12 +71,12 @@ items:
             httpGet:
               path: /healthz
               port: 8443
-              scheme: HTTPS
+              scheme: HTTP
           readinessProbe:
             httpGet:
               path: /healthz/ready
               port: 8443
-              scheme: HTTPS
+              scheme: HTTP
           ports:
           - containerPort: 8443
             name: external
@@ -101,6 +102,4 @@ items:
           - --listen-cluster=0.0.0.0:8082
           - --storage-dir=/var/lib/telemeter
           - --shared-key=/etc/pki/service/tls.key
-          - --tls-key=/etc/pki/service/tls.key
-          - --tls-crt=/etc/pki/service/tls.crt
           - --authorize=http://telemeter-authorization
