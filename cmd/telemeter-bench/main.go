@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/expfmt"
 	"github.com/spf13/cobra"
 
@@ -23,7 +25,25 @@ import (
 	"github.com/openshift/telemeter/pkg/metricsclient"
 )
 
+var (
+	requestDuration = prometheus.NewSummaryVec(
+		prometheus.SummaryOpts{
+			Name:      "request_duration_seconds",
+			Help:      "The HTTP request latencies in seconds.",
+			Subsystem: "http",
+		},
+		[]string{"code", "method"},
+	)
+
+	inFlight = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "client_in_flight_requests",
+		Help: "A gauge of in-flight requests for the wrapped client.",
+	})
+)
+
 func main() {
+	prometheus.MustRegister(requestDuration, inFlight)
+
 	opt := &Options{
 		Listen:       "localhost:9002",
 		LimitBytes:   200 * 1024,
@@ -293,7 +313,14 @@ func (o *Options) clientAndURL(id int) (*http.Client, *url.URL, metricfamily.Lab
 	}
 
 	var lt metricfamily.LabelRetriever
-	toClient := &http.Client{Transport: metricsclient.DefaultTransport()}
+	toClient := &http.Client{
+		Transport: promhttp.InstrumentRoundTripperInFlight(inFlight,
+			promhttp.InstrumentRoundTripperDuration(requestDuration,
+				metricsclient.DefaultTransport(),
+			),
+		),
+	}
+
 	if len(o.ToToken) > 0 {
 		// exchange our token for a token from the authorize endpoint, which also gives us a
 		// set of expected labels we must include
