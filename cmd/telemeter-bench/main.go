@@ -103,8 +103,6 @@ type transforms struct {
 	anonymizeSalt   string
 	renames         map[string]string
 	rules           []string
-
-	forwarder forwarder.Worker
 }
 
 func (t *transforms) Transforms() []metricfamily.Transformer {
@@ -212,7 +210,16 @@ func (o *Options) Run() error {
 		}
 		worker := forwarder.New(url.URL{}, u, &ts)
 		worker.ToClient = metricsclient.New(c, o.LimitBytes, o.Interval, "federate_to")
-		worker.FromClient = metricsclient.NewMock()
+
+		worker.FromClient = metricsclient.NewMock([]string{
+			"up",
+			"openshift_build_info",
+			"machine_cpu_cores",
+			"machine_memory_bytes",
+			"etcd_object_counts",
+			"ALERTS",
+		})
+
 		worker.Interval = o.Interval
 		ws = append(ws, *worker)
 

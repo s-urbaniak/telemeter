@@ -11,25 +11,33 @@ import (
 )
 
 type mock struct {
-	gauge    prometheus.Gauge
+	gauges   []prometheus.Gauge
 	registry *prometheus.Registry
 }
 
-func NewMock() *mock {
+func NewMock(metricNames []string) *mock {
 	r := prometheus.NewRegistry()
-	g := prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "etcd_object_counts",
-			Help: "This is a mock metric.",
-		},
-	)
-	r.MustRegister(g)
 
-	return &mock{gauge: g, registry: r}
+	gauges := make([]prometheus.Gauge, len(metricNames))
+
+	for i, name := range metricNames {
+		gauges[i] = prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: name,
+				Help: "mock",
+			},
+		)
+		r.MustRegister(gauges[i])
+	}
+
+	return &mock{gauges: gauges, registry: r}
 }
 
 func (m *mock) Retrieve(_ context.Context, req *http.Request) ([]*clientmodel.MetricFamily, error) {
-	m.gauge.Set(rand.Float64())
+	for _, g := range m.gauges {
+		g.Set(rand.Float64())
+	}
+
 	families, err := m.registry.Gather()
 	if err != nil {
 		return nil, err
