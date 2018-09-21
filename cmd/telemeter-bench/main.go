@@ -99,10 +99,10 @@ type Options struct {
 type transforms struct {
 	labelRetriever  metricfamily.LabelRetriever
 	labels          map[string]string
-	anonymizeLabels []string
-	anonymizeSalt   string
 	renames         map[string]string
 	rules           []string
+	anonymizeLabels []string
+	anonymizeSalt   string
 }
 
 func (t *transforms) Transforms() []metricfamily.Transformer {
